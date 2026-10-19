@@ -45,6 +45,8 @@ size_t GetType(ONNXTensorElementDataType type)
             return data_type_map["TYPE_INT32"];
         case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
             return data_type_map["TYPE_INT64"];
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16:
+            return data_type_map["TYPE_FP16"];
         default:
             return static_cast<size_t>(TRITONSERVER_TYPE_INVALID);
     }
