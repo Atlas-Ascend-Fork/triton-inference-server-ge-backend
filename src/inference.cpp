@@ -977,8 +977,8 @@ int Inference::BuildSingleCombineOutput(TRITONBACKEND_Response *response, size_t
     }
 
     void *buffer_out;
-    TRITONSERVER_MemoryType memory_type_out;
-    int64_t memory_type_id_out;
+    TRITONSERVER_MemoryType memory_type_out = TRITONSERVER_MEMORY_CPU;
+    int64_t memory_type_id_out = 0;
     error = TRITONBACKEND_OutputBuffer(output, &buffer_out, buffer_size, &memory_type_out, &memory_type_id_out);
     if (error != nullptr) {
         LOG_MESSAGE(TRITONSERVER_LOG_VERBOSE, (std::string("TRITONBACKEND_OutputBuffer failed, ")).c_str());
