@@ -552,6 +552,8 @@ TRITONSERVER_Error *ModelInstanceState::Create(ModelState *model_state,
 {
     *state = new ModelInstanceState(model_state, triton_model_instance);
     if ((*state)->Init() != RET_OK) {
+        delete *state;
+        *state = nullptr;
         return TRITONSERVER_ErrorNew(TRITONSERVER_ERROR_UNKNOWN,
                                      "init instance error, please check log for more info.");
     }
