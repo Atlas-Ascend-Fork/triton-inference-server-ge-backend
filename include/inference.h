@@ -41,8 +41,8 @@ public:
     int GetValueByKey(size_t key) const;
     ge::DataType TransToGeData(size_t key) const;
 
-    void FreeDevResources(std::vector<void *> indev_buffer_, std::vector<void *> outdev_buffer_);
-    void CalculateBatchDistribution(int batch_total, size_t instance_count, std::vector<int> &input_offset,
+    void FreeDevResources(std::vector<void *> &dev_buffer_);
+    void CalculateBatchDistribution(int batch_total, size_t instance_count, std::vector<int> &instance_offset,
                                     std::vector<int> &batch_result);
     void GetExecutionBatchParams(int batch, int &exec_batch, int &cycle_count);
 
@@ -119,31 +119,33 @@ public:
                                std::vector<int> &outhost_line_size_, int batch_total);
     void FreeHostResourcesV2(std::vector<void *> outhost_buffer_);
     int BuildInputTensorV2(size_t input_index, int exec_batch, std::vector<void *> &indev_buffer_, gert::Tensor &tensor,
-                           int cycle_count, std::vector<int> &indev_line_size_, std::vector<void *> &oneBtachDev);
+                           int cycle_count, int instance_offset, std::vector<int> &indev_line_size_,
+                           std::vector<void *> &oneBtachDev);
     int PrepareInputTensorsV2(std::vector<int> &indev_line_size_, int exec_batch, int instance_index,
-                              std::vector<void *> &indev_buffer_, std::vector<gert::Tensor> &inputs, int cycle_count,
+                              int instance_offset, std::vector<void *> &indev_buffer_,
+                              std::vector<gert::Tensor> &inputs, int cycle_count,
                               std::vector<void *> &oneBtachDev);
     int ExecuteInferenceCycleV2(Scheduler::Instance *instance, std::vector<void *> &indev_buffer_,
                                 std::vector<int> &indev_line_size_, std::vector<void *> &outhost_buffer_,
                                 std::vector<int> &outhost_line_size_, std::vector<gert::Tensor> &inputs,
                                 std::vector<gert::Tensor> &outputs, int exec_batch, int cycle_count, int instance_index,
-                                const std::vector<int> &input_offset);
+                                const std::vector<int> &instance_offset);
     int ExecuteSingleInferenceV2(Scheduler::Instance *instance, int instance_index, int instance_count,
                                  std::vector<void *> &indev_buffer_, std::vector<int> &indev_line_size_,
                                  std::vector<void *> &outhost_buffer_, std::vector<int> &outhost_line_size_,
-                                 const std::vector<int> &input_offset, const std::vector<int> &batch_result);
+                                 const std::vector<int> &instance_offset, const std::vector<int> &batch_result);
     int ProcessSingleInstanceV2(Scheduler::Instance *instance, int instance_index, int instance_count,
                                 std::vector<void *> &indev_buffer_, std::vector<int> &indev_line_size_,
                                 std::vector<void *> &outhost_buffer_, std::vector<int> &outhost_line_size_,
-                                const std::vector<int> &input_offset, const std::vector<int> &batch_result,
+                                const std::vector<int> &instance_offset, const std::vector<int> &batch_result,
                                 int &success_count, int &invalid_count);
     int ExecuteInferenceV2(std::vector<Scheduler::Instance *> instances, std::vector<void *> &indev_buffer_,
                            std::vector<int> &indev_line_size_, std::vector<void *> &outhost_buffer_,
-                           std::vector<int> &outhost_line_size_, const std::vector<int> &input_offset,
+                           std::vector<int> &outhost_line_size_, const std::vector<int> &instance_offset,
                            const std::vector<int> &batch_result);
     int ExecuteInferenceParallelV2(std::vector<Scheduler::Instance *> instances, std::vector<void *> &indev_buffer_,
                                    std::vector<int> &indev_line_size_, std::vector<void *> &outhost_buffer_,
-                                   std::vector<int> &outhost_line_size_, const std::vector<int> &input_offset,
+                                   std::vector<int> &outhost_line_size_, const std::vector<int> &instance_offset,
                                    const std::vector<int> &batch_result);
     int ProcessCombineRequestV2(std::vector<TRITONBACKEND_Request *> &batch_tasks,
                                 std::vector<Scheduler::Instance *> &instances, std::vector<int> &batch_result);
@@ -157,13 +159,11 @@ public:
                             std::vector<int> &outhost_line_size_);
     int DispatchInference(std::vector<Scheduler::Instance *> &instances, std::vector<void *> &indev_buffer_,
                          std::vector<int> &indev_line_size_, std::vector<void *> &outhost_buffer_,
-                         std::vector<int> &outhost_line_size_, const std::vector<int> &input_offset,
+                         std::vector<int> &outhost_line_size_, const std::vector<int> &instance_offset,
                          const std::vector<int> &instance_batch);
     int BuildCombineResponses(std::vector<TRITONBACKEND_Request *> &batch_tasks,
                              std::vector<void *> &outhost_buffer_, std::vector<int> &batch_result,
                              std::vector<int> &input_offset, std::vector<int> &outhost_line_size_);
-
-    void FreeDevResourcesUtils(std::vector<void *> &dev_buffer_);
 
 private:
     std::map<size_t, size_t> size_by_type_;

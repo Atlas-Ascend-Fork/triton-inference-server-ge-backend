@@ -181,17 +181,12 @@ ge::DataType Inference::TransToGeData(size_t key) const
     }
 }
 
-void Inference::FreeDevResources(std::vector<void *> indev_buffer_, std::vector<void *> outdev_buffer_)
+void Inference::FreeDevResources(std::vector<void *> &dev_buffer_)
 {
-    for (size_t i = 0; i < indev_buffer_.size(); i++) {
-        aclrtFree(indev_buffer_[i]);
+    for (size_t i = 0; i < dev_buffer_.size(); i++) {
+        aclrtFree(dev_buffer_[i]);
     }
-    indev_buffer_.clear();
-
-    for (size_t i = 0; i < outdev_buffer_.size(); i++) {
-        aclrtFree(outdev_buffer_[i]);
-    }
-    outdev_buffer_.clear();
+    dev_buffer_.clear();
 }
 
 // 等待所有线程完成
@@ -205,10 +200,10 @@ void Inference::JoinAllThreads(std::vector<std::thread> &threads)
 }
 
 // 计算批次分配
-void Inference::CalculateBatchDistribution(int batch_total, size_t instance_count, std::vector<int> &input_offset,
+void Inference::CalculateBatchDistribution(int batch_total, size_t instance_count, std::vector<int> &instance_offset,
                                            std::vector<int> &batch_result)
 {
-    input_offset.resize(instance_count, 0);
+    instance_offset.resize(instance_count, 0);
     batch_result.resize(instance_count, 0);
 
     size_t base = batch_total / instance_count;
@@ -222,7 +217,7 @@ void Inference::CalculateBatchDistribution(int batch_total, size_t instance_coun
     }
 
     for (size_t i = 1; i < instance_count; ++i) {
-        input_offset[i] = input_offset[i - 1] + batch_result[i - 1];
+        instance_offset[i] = instance_offset[i - 1] + batch_result[i - 1];
     }
 }
 
@@ -426,8 +421,8 @@ void Inference::FreeHostResourcesV2(std::vector<void *> outhost_buffer_)
 
 // 构建输入张量
 int Inference::BuildInputTensorV2(size_t input_index, int exec_batch, std::vector<void *> &indev_buffer_,
-                                  gert::Tensor &tensor, int cycle_count, std::vector<int> &indev_line_size_,
-                                  std::vector<void *> &oneBtachDev)
+                                  gert::Tensor &tensor, int cycle_count, int instance_offset,
+                                  std::vector<int> &indev_line_size_, std::vector<void *> &oneBtachDev)
 {
     // TODO 如果循环次数是1 直接使用偏移的数据地址 如果循环次数是exec_batch 重新申请一块内存 再添加一次复制操作 dev->dev
     std::initializer_list<int64_t> origin_shape_list;
@@ -494,7 +489,7 @@ int Inference::BuildInputTensorV2(size_t input_index, int exec_batch, std::vecto
         }
         oneBtachDev.push_back(dev_buffer);
     } else {
-        dev_buffer = indev_buffer_[input_index];
+        dev_buffer = (void *)((BYTE_PTR)indev_buffer_[input_index] + instance_offset * indev_line_size_[input_index]);
     }
     tensor = {input_shape, input_format, gert::kOnDeviceHbm, input_dtype, dev_buffer};
 
@@ -503,8 +498,9 @@ int Inference::BuildInputTensorV2(size_t input_index, int exec_batch, std::vecto
 
 // 准备输入张量
 int Inference::PrepareInputTensorsV2(std::vector<int> &indev_line_size_, int exec_batch, int instance_index,
-                                     std::vector<void *> &indev_buffer_, std::vector<gert::Tensor> &inputs,
-                                     int cycle_count, std::vector<void *> &oneBtachDev)
+                                     int instance_offset, std::vector<void *> &indev_buffer_,
+                                     std::vector<gert::Tensor> &inputs, int cycle_count,
+                                     std::vector<void *> &oneBtachDev)
 {
     inputs.resize(model_state_->GetInputCount());
 
@@ -514,8 +510,8 @@ int Inference::PrepareInputTensorsV2(std::vector<int> &indev_line_size_, int exe
                                                   .c_str());
 
         // 构建输入张量
-        if (BuildInputTensorV2(j, exec_batch, indev_buffer_, inputs[j], cycle_count, indev_line_size_, oneBtachDev) !=
-            RET_OK) {
+        if (BuildInputTensorV2(j, exec_batch, indev_buffer_, inputs[j], cycle_count, instance_offset,
+                               indev_line_size_, oneBtachDev) != RET_OK) {
             return RET_ERR;
         }
     }
@@ -526,7 +522,7 @@ int Inference::ExecuteInferenceCycleV2(Scheduler::Instance *instance, std::vecto
                                        std::vector<int> &indev_line_size_, std::vector<void *> &outhost_buffer_,
                                        std::vector<int> &outhost_line_size_, std::vector<gert::Tensor> &inputs,
                                        std::vector<gert::Tensor> &outputs, int exec_batch, int cycle_count,
-                                       int instance_index, const std::vector<int> &input_offset)
+                                       int instance_index, const std::vector<int> &instance_offset)
 {
     aclError acl_ret;
     ge::Status ret;
@@ -537,7 +533,8 @@ int Inference::ExecuteInferenceCycleV2(Scheduler::Instance *instance, std::vecto
             for (size_t j = 0; j < model_state_->GetInputCount(); j++) {
                 int buffer_size = exec_batch * indev_line_size_[j];
                 void *src_ptr =
-                    (void *)((BYTE_PTR)indev_buffer_[j] + (input_offset[instance_index] + k) * indev_line_size_[j]);
+                    (void *)((BYTE_PTR)indev_buffer_[j] +
+                             (instance_offset[instance_index] + k) * indev_line_size_[j]);
                 acl_ret =
                     aclrtMemcpy(inputs[j].GetAddr(), buffer_size, src_ptr, buffer_size, ACL_MEMCPY_DEVICE_TO_DEVICE);
                 if (acl_ret != ACL_SUCCESS) {
@@ -571,21 +568,14 @@ int Inference::ExecuteInferenceCycleV2(Scheduler::Instance *instance, std::vecto
             int total_out_size = exec_batch * outhost_line_size_[j];
             void *outdevBuffer = outputs[j].GetAddr();
             void *dst_ptr =
-                (void *)((BYTE_PTR)outhost_buffer_[j] + (input_offset[instance_index] + k) * outhost_line_size_[j]);
+                (void *)((BYTE_PTR)outhost_buffer_[j] +
+                         (instance_offset[instance_index] + k) * outhost_line_size_[j]);
 
             aclrtMemcpy(dst_ptr, total_out_size, outdevBuffer, total_out_size, ACL_MEMCPY_DEVICE_TO_HOST);
         }
     }
 
     return RET_OK;
-}
-
-void Inference::FreeDevResourcesUtils(std::vector<void *> &dev_buffer_)
-{
-    for (size_t i = 0; i < dev_buffer_.size(); i++) {
-        aclrtFree(dev_buffer_[i]);
-    }
-    dev_buffer_.clear();
 }
 
 // 准备输出张量
@@ -657,7 +647,8 @@ int Inference::BuildOutputTensor(size_t output_index, int exec_batch, void *out_
 int Inference::ExecuteSingleInferenceV2(Scheduler::Instance *instance, int instance_index, int instance_count,
                                         std::vector<void *> &indev_buffer_, std::vector<int> &indev_line_size_,
                                         std::vector<void *> &outhost_buffer_, std::vector<int> &outhost_line_size_,
-                                        const std::vector<int> &input_offset, const std::vector<int> &batch_result)
+                                        const std::vector<int> &instance_offset,
+                                        const std::vector<int> &batch_result)
 {
     int batch = batch_result[instance_index];
     if (batch == 0) {
@@ -676,30 +667,30 @@ int Inference::ExecuteSingleInferenceV2(Scheduler::Instance *instance, int insta
     std::vector<void *> oneBtachDev;
 
     // 准备输入张量
-    if (PrepareInputTensorsV2(indev_line_size_, exec_batch, instance_index, indev_buffer_, inputs, cycle_count,
-                              oneBtachDev) != RET_OK) {
-        FreeDevResources(indev_buffer_, outdev_buffer_);
-        FreeDevResourcesUtils(oneBtachDev);
+    if (PrepareInputTensorsV2(indev_line_size_, exec_batch, instance_index, instance_offset[instance_index],
+                              indev_buffer_, inputs, cycle_count, oneBtachDev) != RET_OK) {
+        FreeDevResources(outdev_buffer_);
+        FreeDevResources(oneBtachDev);
         return RET_ERR;
     }
 
     // 准备输出张量
     if (PrepareOutputTensors(outhost_line_size_, exec_batch, outdev_buffer_, outputs) != RET_OK) {
-        FreeDevResources(indev_buffer_, outdev_buffer_);
-        FreeDevResourcesUtils(oneBtachDev);
+        FreeDevResources(outdev_buffer_);
+        FreeDevResources(oneBtachDev);
         return RET_ERR;
     }
 
     // 执行推理循环
     if (ExecuteInferenceCycleV2(instance, indev_buffer_, indev_line_size_, outhost_buffer_, outhost_line_size_, inputs,
-                                outputs, exec_batch, cycle_count, instance_index, input_offset) != RET_OK) {
-        FreeDevResources(indev_buffer_, outdev_buffer_);
-        FreeDevResourcesUtils(oneBtachDev);
+                                outputs, exec_batch, cycle_count, instance_index, instance_offset) != RET_OK) {
+        FreeDevResources(outdev_buffer_);
+        FreeDevResources(oneBtachDev);
         return RET_ERR;
     }
 
-    FreeDevResources(indev_buffer_, outdev_buffer_);
-    FreeDevResourcesUtils(oneBtachDev);
+    FreeDevResources(outdev_buffer_);
+    FreeDevResources(oneBtachDev);
     return RET_OK;
 }
 
@@ -707,7 +698,7 @@ int Inference::ExecuteSingleInferenceV2(Scheduler::Instance *instance, int insta
 int Inference::ProcessSingleInstanceV2(Scheduler::Instance *instance, int instance_index, int instance_count,
                                        std::vector<void *> &indev_buffer_, std::vector<int> &indev_line_size_,
                                        std::vector<void *> &outhost_buffer_, std::vector<int> &outhost_line_size_,
-                                       const std::vector<int> &input_offset, const std::vector<int> &batch_result,
+                                       const std::vector<int> &instance_offset, const std::vector<int> &batch_result,
                                        int &success_count, int &invalid_count)
 {
     LOG_MESSAGE(TRITONSERVER_LOG_VERBOSE, (std::string("instance_index: ") + std::to_string(instance_index) +
@@ -721,7 +712,7 @@ int Inference::ProcessSingleInstanceV2(Scheduler::Instance *instance, int instan
     }
 
     int result = ExecuteSingleInferenceV2(instance, instance_index, instance_count, indev_buffer_, indev_line_size_,
-                                          outhost_buffer_, outhost_line_size_, input_offset, batch_result);
+                                          outhost_buffer_, outhost_line_size_, instance_offset, batch_result);
     if (result == RET_OK) {
         success_count++;
     }
@@ -732,7 +723,7 @@ int Inference::ProcessSingleInstanceV2(Scheduler::Instance *instance, int instan
 // 串行执行推理（不使用线程）
 int Inference::ExecuteInferenceV2(std::vector<Scheduler::Instance *> instances, std::vector<void *> &indev_buffer_,
                                   std::vector<int> &indev_line_size_, std::vector<void *> &outhost_buffer_,
-                                  std::vector<int> &outhost_line_size_, const std::vector<int> &input_offset,
+                                  std::vector<int> &outhost_line_size_, const std::vector<int> &instance_offset,
                                   const std::vector<int> &batch_result)
 {
     if (instances.empty()) {
@@ -744,7 +735,7 @@ int Inference::ExecuteInferenceV2(std::vector<Scheduler::Instance *> instances, 
 
     for (size_t instance_index = 0; instance_index < instances.size(); instance_index++) {
         int ret = ProcessSingleInstanceV2(instances[instance_index], instance_index, instances.size(), indev_buffer_,
-                                          indev_line_size_, outhost_buffer_, outhost_line_size_, input_offset,
+                                          indev_line_size_, outhost_buffer_, outhost_line_size_, instance_offset,
                                           batch_result, success_count, invalid_count);
         if (ret == RET_ERR) {
             return RET_ERR;
@@ -757,7 +748,8 @@ int Inference::ExecuteInferenceV2(std::vector<Scheduler::Instance *> instances, 
 int Inference::ExecuteInferenceParallelV2(std::vector<Scheduler::Instance *> instances,
                                           std::vector<void *> &indev_buffer_, std::vector<int> &indev_line_size_,
                                           std::vector<void *> &outhost_buffer_, std::vector<int> &outhost_line_size_,
-                                          const std::vector<int> &input_offset, const std::vector<int> &batch_result)
+                                          const std::vector<int> &instance_offset,
+                                          const std::vector<int> &batch_result)
 {
     if (instances.empty()) {
         return RET_OK;  // 没有实例，直接返回成功
@@ -771,13 +763,13 @@ int Inference::ExecuteInferenceParallelV2(std::vector<Scheduler::Instance *> ins
     for (size_t instance_index = 0; instance_index < instances.size(); instance_index++) {
         threads.emplace_back([this, &mu, &success_count, &invalid_count, instance = instances[instance_index],
                               instance_index, count = instances.size(), &indev_buffer_, &indev_line_size_,
-                              &outhost_buffer_, &outhost_line_size_, &input_offset, &batch_result]() {
+                              &outhost_buffer_, &outhost_line_size_, &instance_offset, &batch_result]() {
             // 使用局部变量来收集结果，然后原子更新
             int local_success = 0;
             int local_invalid = 0;
 
             ProcessSingleInstanceV2(instance, instance_index, count, indev_buffer_, indev_line_size_, outhost_buffer_,
-                                    outhost_line_size_, input_offset, batch_result, local_success, local_invalid);
+                                    outhost_line_size_, instance_offset, batch_result, local_success, local_invalid);
 
             // 原子更新计数
             if (local_invalid > 0) {
@@ -840,17 +832,17 @@ int Inference::PrepareInferenceData(int batch_total, std::vector<TRITONBACKEND_R
 
 int Inference::DispatchInference(std::vector<Scheduler::Instance *> &instances, std::vector<void *> &indev_buffer_,
                                  std::vector<int> &indev_line_size_, std::vector<void *> &outhost_buffer_,
-                                 std::vector<int> &outhost_line_size_, const std::vector<int> &input_offset,
+                                 std::vector<int> &outhost_line_size_, const std::vector<int> &instance_offset,
                                  const std::vector<int> &instance_batch)
 {
     if (instances.size() == 1) {
         if (ExecuteInferenceV2(instances, indev_buffer_, indev_line_size_, outhost_buffer_, outhost_line_size_,
-                               input_offset, instance_batch) == RET_ERR) {
+                               instance_offset, instance_batch) == RET_ERR) {
             return RET_ERR;
         }
     } else {
         if (ExecuteInferenceParallelV2(instances, indev_buffer_, indev_line_size_, outhost_buffer_, outhost_line_size_,
-                                       input_offset, instance_batch) == RET_ERR) {
+                                       instance_offset, instance_batch) == RET_ERR) {
             return RET_ERR;
         }
     }
@@ -896,6 +888,7 @@ int Inference::ProcessCombineRequestV2(std::vector<TRITONBACKEND_Request *> &bat
     if (PrepareInferenceData(batch_total, batch_tasks, batch_result, input_offset,
                             indev_buffer_, indev_line_size_, outhost_buffer_, outsize,
                             outhost_line_size_) != RET_OK) {
+        FreeDevResources(indev_buffer_);
         FreeHostResourcesV2(outhost_buffer_);
         return RET_ERR;
     }
@@ -907,8 +900,10 @@ int Inference::ProcessCombineRequestV2(std::vector<TRITONBACKEND_Request *> &bat
     CalculateBatchDistribution(batch_total, instance_count, instance_offset, instance_batch);
 
     // 执行推理
-    if (DispatchInference(instances, indev_buffer_, indev_line_size_, outhost_buffer_,
-                         outhost_line_size_, input_offset, instance_batch) != RET_OK) {
+    int dispatch_result = DispatchInference(instances, indev_buffer_, indev_line_size_, outhost_buffer_,
+                                           outhost_line_size_, instance_offset, instance_batch);
+    FreeDevResources(indev_buffer_);
+    if (dispatch_result != RET_OK) {
         FreeHostResourcesV2(outhost_buffer_);
         return RET_ERR;
     }
