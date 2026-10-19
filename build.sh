@@ -81,7 +81,7 @@ fi
 echo "Triton version: ${TRITON_VERSION}"
 
 if [ -z "$TRITON_HOME_PATH" ]; then
-  TRITON_HOME_PATH="/opt/tritonserver"
+  export TRITON_HOME_PATH="/opt/tritonserver"
   echo "TRITON_HOME_PATH not set, using default path: ${TRITON_HOME_PATH}"
 fi
 
