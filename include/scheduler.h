@@ -86,7 +86,7 @@ public:
     void AddInstance(int index, aclrtContext context, aclrtStream stream, ge::Session *session, int group_id);
 
     // 设置 instance 状态
-    void SetInstanceStatus(std::vector<Instance *> instance, Status status);
+    void SetInstanceStatus(const std::vector<Instance *> &instance, Status status);
 
     // 获取实例数量
     size_t GetInstanceCount();
@@ -134,6 +134,26 @@ private:
     std::condition_variable cv;
     std::vector<Instance> instances;
     std::unordered_map<int, std::vector<int>> group_instances;
+};
+
+class ScopedInstanceStatusReset {
+public:
+    ScopedInstanceStatusReset(Scheduler &scheduler, const std::vector<Scheduler::Instance *> &instances)
+        : scheduler_(scheduler), instances_(instances)
+    {
+    }
+
+    ScopedInstanceStatusReset(const ScopedInstanceStatusReset &) = delete;
+    ScopedInstanceStatusReset &operator=(const ScopedInstanceStatusReset &) = delete;
+
+    ~ScopedInstanceStatusReset()
+    {
+        scheduler_.SetInstanceStatus(instances_, Scheduler::Status::IDLE);
+    }
+
+private:
+    Scheduler &scheduler_;
+    const std::vector<Scheduler::Instance *> &instances_;
 };
 
 }

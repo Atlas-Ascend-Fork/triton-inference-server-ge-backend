@@ -255,7 +255,7 @@ std::vector<Scheduler::Instance *> Scheduler::GetIdleInstances(aclrtContext now_
 }
 
 // 设置 instance 状态
-void Scheduler::SetInstanceStatus(std::vector<Scheduler::Instance *> instances, Status status)
+void Scheduler::SetInstanceStatus(const std::vector<Scheduler::Instance *> &instances, Status status)
 {
     std::lock_guard<std::mutex> lock(mutex);
     for (const auto &instance : instances) {

@@ -751,8 +751,6 @@ int Inference::ExecuteInferenceV2(std::vector<Scheduler::Instance *> instances, 
         }
     }
 
-    model_state_->GetScheduler()->SetInstanceStatus(instances, Scheduler::Status::IDLE);
-
     return CheckInferenceResult(success_count, invalid_count, instances.size());
 }
 
@@ -792,8 +790,6 @@ int Inference::ExecuteInferenceParallelV2(std::vector<Scheduler::Instance *> ins
     }
 
     JoinAllThreads(threads);
-    model_state_->GetScheduler()->SetInstanceStatus(instances, Scheduler::Status::IDLE);
-
     return CheckInferenceResult(success_count, invalid_count, instances.size());
 }
 
@@ -1309,8 +1305,10 @@ void Inference::LogResult(std::pair<size_t, size_t> &index)
 
 int Inference::BatchSplicTasks(std::vector<TRITONBACKEND_Request *> &batch_tasks, std::vector<int> &batch_result)
 {
+    Scheduler *scheduler = model_state_->GetScheduler();
     std::vector<Scheduler::Instance *> instances =
-        model_state_->GetScheduler()->GetIdleInstances(nullptr, model_state_->GetInstanceExecBlock());
+        scheduler->GetIdleInstances(nullptr, model_state_->GetInstanceExecBlock());
+    ScopedInstanceStatusReset reset_instances(*scheduler, instances);
     if (ProcessCombineRequestV2(batch_tasks, instances, batch_result) != RET_OK) {
         return RET_ERR;
     }
