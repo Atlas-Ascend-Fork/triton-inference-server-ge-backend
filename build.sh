@@ -58,8 +58,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Resolve the source directory before creating or cleaning build artifacts.
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+if [ ! -f "${PROJECT_DIR}/CMakeLists.txt" ]; then
+  echo "CMakeLists.txt not found beside build.sh: ${PROJECT_DIR}" >&2
+  exit 1
+fi
+if [ -L "${PROJECT_DIR}/build" ]; then
+  echo "Refusing to use a symbolic link as the build directory" >&2
+  exit 1
+fi
+
+cd -- "${PROJECT_DIR}"
 echo "BUILD_TYPE: ${BUILD_TYPE}"
-mkdir -p build && cd build
+mkdir -p build
+cd -- build
 
 if [ ${INCREMENTAL_COMPILATION} == "OFF" ]; then
   rm -rf *
