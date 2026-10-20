@@ -103,7 +103,7 @@ public:
                              std::vector<gert::Tensor> &outputs);
     int AllocateSingleMemoryV2(ModelState *model_state, size_t j, std::vector<void *> &indev_buffer_,
                                std::vector<int> &indev_line_size_, const int64_t *shape, uint32_t dims_count,
-                               const void *buffer, uint64_t buffer_size);
+                               uint64_t buffer_size);
     int ProcessRequestInputsV2(TRITONBACKEND_Request *request, size_t request_index, std::vector<int> &batch_result,
                                std::vector<void *> &indev_buffer_, std::vector<int> &indev_line_size_,
                                std::vector<int> &input_offset);

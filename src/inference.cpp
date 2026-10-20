@@ -6,6 +6,8 @@
 #include "inference.h"
 #include "utils.h"
 
+#include <limits>
+
 using namespace std;
 namespace triton {
 namespace backend {
@@ -225,35 +227,25 @@ void Inference::CalculateBatchDistribution(int batch_total, size_t instance_coun
 
 int Inference::AllocateSingleMemoryV2(ModelState *model_state, size_t j, std::vector<void *> &indev_buffer_,
                                       std::vector<int> &indev_line_size_, const int64_t *shape, uint32_t dims_count,
-                                      const void *buffer, uint64_t buffer_size)
+                                      uint64_t buffer_size)
 {
-    // 申请dev侧内存 直接将数据复制到dev侧
+    // 申请dev侧内存，输入数据由调用方按buffer片段顺序复制。
     aclError acl_ret;
-    size_t sample_element_size = GetValueByKey(model_state->GetInputClientTensors()[j].dtype_);
-    int per_buffer_size = sample_element_size;
-    int64_t total_out_size = static_cast<int64_t>(sample_element_size);
+    int element_size = GetValueByKey(model_state->GetInputClientTensors()[j].dtype_);
+    if (element_size <= 0 || (dims_count > 0 && shape == nullptr) ||
+        buffer_size > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+        return RET_ERR;
+    }
+
+    uint64_t per_buffer_size = static_cast<uint64_t>(element_size);
     vector<int64_t> v1;
     for (size_t i = 0; i < dims_count; i++) {
+        if (shape[i] < 0) {
+            return RET_ERR;
+        }
         v1.push_back(shape[i]);
-        total_out_size *= shape[i];
     }
     input_tensor_info_[j].tensor_dims_ = v1;
-    // 申请buffer_size大小的dev内存
-    void *indev_buffer = nullptr;
-    acl_ret = aclrtMalloc(&indev_buffer, buffer_size, ACL_MEM_MALLOC_NORMAL_ONLY);
-    if (acl_ret != ACL_ERROR_NONE) {
-        LOG_MESSAGE(TRITONSERVER_LOG_ERROR,
-                    (std::string("malloc dev buffer failed, ret is:") + std::to_string(acl_ret)).c_str());
-        return RET_ERR;
-    }
-    // 复制数据到dev侧
-    acl_ret = aclrtMemcpy(indev_buffer, buffer_size, buffer, buffer_size, ACL_MEMCPY_HOST_TO_DEVICE);
-    if (acl_ret != ACL_SUCCESS) {
-        LOG_MESSAGE(TRITONSERVER_LOG_ERROR,
-                    (std::string("aclrtMemcpy is failed, ret code is ") + std::to_string(acl_ret)).c_str());
-        return RET_ERR;
-    }
-    indev_buffer_.push_back(indev_buffer);
 
     int index = 1;
     ModelState::ModelMode modelmode = model_state_->GetModelNode();
@@ -261,11 +253,26 @@ int Inference::AllocateSingleMemoryV2(ModelState *model_state, size_t j, std::ve
         modelmode == ModelState::ModelMode::NO_MAX_BATCH_FIRST_NOT_SAME_EXIST_NEGATIVE) {
         index = 0;
     }
-
     for (size_t k = index; k < dims_count; k++) {
-        per_buffer_size *= shape[k];
+        if (shape[k] != 0 && per_buffer_size > std::numeric_limits<uint64_t>::max() /
+                                                    static_cast<uint64_t>(shape[k])) {
+            return RET_ERR;
+        }
+        per_buffer_size *= static_cast<uint64_t>(shape[k]);
     }
-    indev_line_size_.push_back(per_buffer_size);
+    if (per_buffer_size > static_cast<uint64_t>(INT_MAX)) {
+        return RET_ERR;
+    }
+
+    void *indev_buffer = nullptr;
+    acl_ret = aclrtMalloc(&indev_buffer, static_cast<size_t>(buffer_size), ACL_MEM_MALLOC_NORMAL_ONLY);
+    if (acl_ret != ACL_ERROR_NONE) {
+        LOG_MESSAGE(TRITONSERVER_LOG_ERROR,
+                    (std::string("malloc dev buffer failed, ret is:") + std::to_string(acl_ret)).c_str());
+        return RET_ERR;
+    }
+    indev_buffer_.push_back(indev_buffer);
+    indev_line_size_.push_back(static_cast<int>(per_buffer_size));
     return RET_OK;
 }
 
@@ -276,38 +283,142 @@ int Inference::ProcessRequestInputsV2(TRITONBACKEND_Request *request, size_t req
     aclError acl_ret;
     for (size_t j = 0; j < model_state_->GetInputCount(); j++) {
         TRITONBACKEND_Input *input;
-        TRITONBACKEND_RequestInput(request, model_state_->GetInputClientTensors()[j].name_.c_str(), &input); 
+        TRITONBACKEND_RequestInput(request, model_state_->GetInputClientTensors()[j].name_.c_str(), &input);
         TRITONSERVER_DataType datatype;
         const int64_t *shape;
         uint32_t dims_count;
         const char *input_name;
-        TRITONBACKEND_InputProperties(input, &input_name, &datatype, &shape, &dims_count, nullptr, nullptr);
-        const void *buffer;
-        uint64_t buffer_size;
-        TRITONSERVER_MemoryType memory_type;
-        int64_t memory_type_id;
-        TRITONBACKEND_InputBuffer(input, 0, &buffer, &buffer_size, &memory_type, &memory_type_id);
-        if (CanCombine(model_state_)) {
-            if (static_cast<uint64_t>(batch_result[request_index] * indev_line_size_[j]) != buffer_size) {
-                LOG_MESSAGE(TRITONSERVER_LOG_ERROR,
-                            (std::string("buffer_size get error batch_result[request_index] ") +
-                             std::to_string(batch_result[request_index]) + " indev_line_size_[input_index] " +
-                             std::to_string(indev_line_size_[j]) + " buffer_size " + std::to_string(buffer_size))
-                                .c_str());
+        uint64_t reported_byte_size;
+        uint32_t buffer_count;
+        TRITONSERVER_Error *error = TRITONBACKEND_InputProperties(input, &input_name, &datatype, &shape, &dims_count,
+                                                                  &reported_byte_size, &buffer_count);
+        if (error != nullptr) {
+            TRITONSERVER_ErrorDelete(error);
+            return RET_ERR;
+        }
+        if (datatype != static_cast<TRITONSERVER_DataType>(model_state_->GetInputClientTensors()[j].dtype_) ||
+            (dims_count > 0 && shape == nullptr)) {
+            LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "input datatype or shape does not match model metadata");
+            return RET_ERR;
+        }
+
+        int element_size = GetValueByKey(datatype);
+        if (element_size <= 0) {
+            LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "unsupported input datatype");
+            return RET_ERR;
+        }
+        uint64_t expected_byte_size = reported_byte_size;
+        if (datatype != TRITONSERVER_TYPE_BYTES) {
+            expected_byte_size = static_cast<uint64_t>(element_size);
+            for (uint32_t dim = 0; dim < dims_count; ++dim) {
+                if (shape[dim] < 0 ||
+                    (shape[dim] != 0 && expected_byte_size > std::numeric_limits<uint64_t>::max() /
+                                                                   static_cast<uint64_t>(shape[dim]))) {
+                    LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "input shape byte size overflows");
+                    return RET_ERR;
+                }
+                expected_byte_size *= static_cast<uint64_t>(shape[dim]);
+            }
+        }
+
+        struct InputBufferSegment {
+            const void *buffer;
+            uint64_t byte_size;
+            TRITONSERVER_MemoryType memory_type;
+            int64_t memory_type_id;
+        };
+        vector<InputBufferSegment> input_buffers;
+        input_buffers.reserve(buffer_count);
+        uint64_t total_buffer_size = 0;
+        for (uint32_t buffer_index = 0; buffer_index < buffer_count; ++buffer_index) {
+            InputBufferSegment segment{};
+            segment.memory_type = TRITONSERVER_MEMORY_CPU;
+            segment.memory_type_id = 0;
+            error = TRITONBACKEND_InputBuffer(input, buffer_index, &segment.buffer, &segment.byte_size,
+                                              &segment.memory_type, &segment.memory_type_id);
+            if (error != nullptr) {
+                TRITONSERVER_ErrorDelete(error);
                 return RET_ERR;
             }
-            // 复制数据 按偏移
-            acl_ret =
-                aclrtMemcpy(static_cast<char *>(indev_buffer_[j]) + input_offset[request_index] * indev_line_size_[j],
-                            buffer_size, buffer, buffer_size, ACL_MEMCPY_HOST_TO_DEVICE);
+            if ((segment.byte_size > 0 && segment.buffer == nullptr) ||
+                segment.byte_size > expected_byte_size - total_buffer_size) {
+                LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "input buffer fragments exceed the tensor byte size");
+                return RET_ERR;
+            }
+            if (segment.memory_type != TRITONSERVER_MEMORY_CPU &&
+                segment.memory_type != TRITONSERVER_MEMORY_CPU_PINNED) {
+                LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "input buffer memory type is not host accessible");
+                return RET_ERR;
+            }
+            total_buffer_size += segment.byte_size;
+            input_buffers.push_back(segment);
+        }
+        if (total_buffer_size != reported_byte_size || total_buffer_size != expected_byte_size) {
+            LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "input buffer size does not match tensor shape and datatype");
+            return RET_ERR;
+        }
+
+        void *destination = nullptr;
+        if (CanCombine(model_state_)) {
+            if (j >= indev_buffer_.size() || j >= indev_line_size_.size() ||
+                request_index >= batch_result.size() || request_index >= input_offset.size() ||
+                indev_line_size_[j] <= 0 || batch_result[request_index] < 0 || input_offset[request_index] < 0) {
+                LOG_MESSAGE(TRITONSERVER_LOG_ERROR,
+                            "input shape does not match the combined batch slice");
+                return RET_ERR;
+            }
+            uint64_t line_size = static_cast<uint64_t>(indev_line_size_[j]);
+            if (static_cast<uint64_t>(batch_result[request_index]) >
+                    std::numeric_limits<uint64_t>::max() / line_size ||
+                static_cast<uint64_t>(batch_result[request_index]) * line_size != expected_byte_size) {
+                LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "input shape does not match the combined batch slice");
+                return RET_ERR;
+            }
+            uint64_t total_batch = 0;
+            for (int batch_size : batch_result) {
+                if (batch_size < 0 || static_cast<uint64_t>(batch_size) >
+                                          std::numeric_limits<uint64_t>::max() - total_batch) {
+                    return RET_ERR;
+                }
+                total_batch += static_cast<uint64_t>(batch_size);
+            }
+            if (total_batch > std::numeric_limits<uint64_t>::max() / line_size ||
+                static_cast<uint64_t>(input_offset[request_index]) >
+                    std::numeric_limits<uint64_t>::max() / line_size) {
+                return RET_ERR;
+            }
+            uint64_t capacity = total_batch * line_size;
+            uint64_t offset = static_cast<uint64_t>(input_offset[request_index]) * line_size;
+            if (indev_buffer_[j] == nullptr || offset > capacity || expected_byte_size > capacity - offset) {
+                LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "combined input slice exceeds the allocated buffer");
+                return RET_ERR;
+            }
+            destination = static_cast<char *>(indev_buffer_[j]) + offset;
+        } else {
+            CHECK_RET_ERR(AllocateSingleMemoryV2(model_state_, j, indev_buffer_, indev_line_size_, shape, dims_count,
+                                                 expected_byte_size));
+            destination = indev_buffer_.back();
+        }
+
+        uint64_t copied_size = 0;
+        for (const auto &segment : input_buffers) {
+            if (segment.byte_size == 0) {
+                continue;
+            }
+            if (segment.memory_type != TRITONSERVER_MEMORY_CPU &&
+                segment.memory_type != TRITONSERVER_MEMORY_CPU_PINNED) {
+                LOG_MESSAGE(TRITONSERVER_LOG_ERROR, "input buffer memory type is not host accessible");
+                return RET_ERR;
+            }
+            acl_ret = aclrtMemcpy(static_cast<char *>(destination) + copied_size,
+                                  static_cast<size_t>(expected_byte_size - copied_size), segment.buffer,
+                                  static_cast<size_t>(segment.byte_size), ACL_MEMCPY_HOST_TO_DEVICE);
             if (acl_ret != ACL_SUCCESS) {
                 LOG_MESSAGE(TRITONSERVER_LOG_ERROR,
                             (std::string("aclrtMemcpy is failed, ret code is ") + std::to_string(acl_ret)).c_str());
                 return RET_ERR;
             }
-        } else {
-            CHECK_RET_ERR(AllocateSingleMemoryV2(model_state_, j, indev_buffer_, indev_line_size_, shape, dims_count,
-                                                 buffer, buffer_size));
+            copied_size += segment.byte_size;
         }
     }
     return RET_OK;
