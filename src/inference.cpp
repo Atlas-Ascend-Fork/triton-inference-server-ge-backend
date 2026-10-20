@@ -1,6 +1,8 @@
 /*
  * Copyright (c) Huawei Technologies Co., Ltd. 2025-2025. All rights reserved.
  */
+#include <cctype>
+
 #include "inference.h"
 #include "utils.h"
 
@@ -1057,15 +1059,16 @@ int Inference::GetDimNum(std::map<std::string, int> values, std::string formula)
 std::string Inference::ReplaceVariables(std::string &formula, std::map<std::string, int> &values)
 {
     string result = formula;
+    auto isIdentifierChar = [](unsigned char c) { return std::isalnum(c) || c == '_'; };
     for (auto &pair : values) {
         string variable = pair.first;
         string value = to_string(pair.second);
 
         size_t pos = 0;
         while ((pos = result.find(variable, pos)) != string::npos) {
-            // 检查变量名前后是否是字母或数字，确保是完整的变量名
-            bool validBefore = (pos == 0 || !isalnum(result[pos - 1]));
-            bool validAfter = (pos + variable.length() == result.length() || !isalnum(result[pos + variable.length()]));
+            bool validBefore = (pos == 0 || !isIdentifierChar(static_cast<unsigned char>(result[pos - 1])));
+            bool validAfter = (pos + variable.length() == result.length() ||
+                               !isIdentifierChar(static_cast<unsigned char>(result[pos + variable.length()])));
 
             if (validBefore && validAfter) {
                 result.replace(pos, variable.length(), value);
