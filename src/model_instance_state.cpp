@@ -345,6 +345,7 @@ void ModelInstanceState::CreateDeviceThreads(int dev_id, int dev_index, int devi
     aclrtContext context_ = nullptr;
 
     if (!SetDeviceAndContext(dev_id, context_)) {
+        init_failed_.store(true);
         return;
     }
 
