@@ -252,27 +252,34 @@ TRITONSERVER_Error *ModelState::ParseDynamicBatching()
         (std::string("found_dynamic_batching :") + std::to_string(static_cast<int>(found_dynamic_batching))).c_str());
     triton::common::TritonJson::Value outputs;
     if (found_dynamic_batching) {
-        std::string max_queue_delay_microseconds;
-        int64_t delay_microseconds = 0;
-        RETURN_IF_ERROR(value.MemberAsInt("max_queue_delay_microseconds", &delay_microseconds));
-        dynamic_batching_.max_queue_delay_microseconds_ = delay_microseconds;
-        LOG_MESSAGE(TRITONSERVER_LOG_VERBOSE, (std::string("max_queue_delay_microseconds :") +
-                                               std::to_string(static_cast<int>(delay_microseconds)))
-                                                  .c_str());
+        // Both fields are optional in Triton model configs; an omitted
+        // max_queue_delay_microseconds defaults to zero and must not drop
+        // preferred_batch_size. Errors are only propagated when a field is
+        // present but malformed.
+        common::TritonJson::Value delay_value;
+        if (value.Find("max_queue_delay_microseconds", &delay_value)) {
+            int64_t delay_microseconds = 0;
+            RETURN_IF_ERROR(delay_value.AsInt(&delay_microseconds));
+            dynamic_batching_.max_queue_delay_microseconds_ = delay_microseconds;
+            LOG_MESSAGE(TRITONSERVER_LOG_VERBOSE, (std::string("max_queue_delay_microseconds :") +
+                                                   std::to_string(static_cast<int>(delay_microseconds)))
+                                                      .c_str());
+        }
 
         common::TritonJson::Value dims;
-        RETURN_IF_ERROR(value.MemberAsArray("preferred_batch_size", &dims));
-        LOG_MESSAGE(TRITONSERVER_LOG_VERBOSE, (std::string(" preferred_batch_size:  Dims: [")).c_str());
-        for (size_t j = 0; j < dims.ArraySize(); j++) {
-            int64_t dim;
-            RETURN_IF_ERROR(dims.IndexAsInt(j, &dim));
+        if (value.Find("preferred_batch_size", &dims)) {
+            LOG_MESSAGE(TRITONSERVER_LOG_VERBOSE, (std::string(" preferred_batch_size:  Dims: [")).c_str());
+            for (size_t j = 0; j < dims.ArraySize(); j++) {
+                int64_t dim;
+                RETURN_IF_ERROR(dims.IndexAsInt(j, &dim));
 
-            LOG_MESSAGE(TRITONSERVER_LOG_VERBOSE,
-                        (std::string("  dim") + std::to_string(j) + ": " + std::to_string(dim)).c_str());
-            dynamic_batching_.preferred_batch_sizes.emplace_back(dim);
+                LOG_MESSAGE(TRITONSERVER_LOG_VERBOSE,
+                            (std::string("  dim") + std::to_string(j) + ": " + std::to_string(dim)).c_str());
+                dynamic_batching_.preferred_batch_sizes.emplace_back(dim);
+            }
+            sort(dynamic_batching_.preferred_batch_sizes.begin(), dynamic_batching_.preferred_batch_sizes.end());
+            LOG_MESSAGE(TRITONSERVER_LOG_VERBOSE, (std::string("]")).c_str());
         }
-        sort(dynamic_batching_.preferred_batch_sizes.begin(), dynamic_batching_.preferred_batch_sizes.end());
-        LOG_MESSAGE(TRITONSERVER_LOG_VERBOSE, (std::string("]")).c_str());
     }
     return nullptr;
 }
