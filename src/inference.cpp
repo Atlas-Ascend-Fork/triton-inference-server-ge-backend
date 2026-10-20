@@ -573,7 +573,12 @@ int Inference::ExecuteInferenceCycleV2(Scheduler::Instance *instance, std::vecto
                 (void *)((BYTE_PTR)outhost_buffer_[j] +
                          (instance_offset[instance_index] + k) * outhost_line_size_[j]);
 
-            aclrtMemcpy(dst_ptr, total_out_size, outdevBuffer, total_out_size, ACL_MEMCPY_DEVICE_TO_HOST);
+            acl_ret = aclrtMemcpy(dst_ptr, total_out_size, outdevBuffer, total_out_size, ACL_MEMCPY_DEVICE_TO_HOST);
+            if (acl_ret != ACL_SUCCESS) {
+                LOG_MESSAGE(TRITONSERVER_LOG_ERROR,
+                            (std::string("aclrtMemcpy output is failed, ret code is ") + std::to_string(acl_ret)).c_str());
+                return RET_ERR;
+            }
         }
     }
 
