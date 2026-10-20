@@ -525,6 +525,7 @@ int ModelInstanceState::InitializeDeviceThreads(const std::vector<int> &dev_ids_
     // 检查是否有初始化失败
     if (init_failed_.load()) {
         HandleInitFailure();
+        notify_id.store(lock + 1);
         return RET_ERR;
     }
 
