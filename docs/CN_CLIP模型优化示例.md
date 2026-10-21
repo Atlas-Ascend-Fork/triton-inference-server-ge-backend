@@ -96,7 +96,7 @@ torch.onnx.export(model,
 ![](./figures/cnclip_3.png)
 可以看到在执行Mod操作时，图从前面的static模式变成了dynamic模式，而且算子本身是一个AI_CPU类算子，初步定位为Mod导致问题，我们可以打开onnx 文件查看Mod算子作用，用Netron打开相应的onnx文件。找到这个Mod。
 ![](./figures/cnclip_4.png)
-可以看到Mod之前是一个Add计算，A是一个固定值3 ，3-1=2， 2Mod3 = 2 ，每一层均是一个固定值，那这个Mod过程其实可以把Mod这个节点给删掉，让Add的结果2，直接接入到Mod的下面两个节点。
+可以看到Mod之前是一个Add计算，A是一个固定值3，3-1=2， 2Mod3 = 2，每一层均是一个固定值，那这个Mod过程其实可以把Mod这个节点给删掉，让Add的结果2，直接接入到Mod的下面两个节点。
 * 删除节点的代码可以通过Deepseek等AI生成，通过修改后，再次跑图，用profiling采集，所有node均变为static。
 
 两者吞吐对比(1 instance)：

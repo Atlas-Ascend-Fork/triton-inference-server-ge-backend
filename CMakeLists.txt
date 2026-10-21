@@ -6,7 +6,6 @@ project(triton-npu-ge-backend LANGUAGES C CXX)
 set(ASCEND_DIR /usr/local/Ascend)
 set(ASCEND_PATH /usr/local/Ascend/ascend-toolkit/latest)
 set(ATC_INCLUDE_DIR ${ASCEND_PATH}/${ARCH}-linux/include)
-set(ONNXRUNTIME_ROOT /opt/onnxruntime)
 
 message("current arch: ${ARCH}")
 
@@ -16,8 +15,7 @@ option(TRITON_ENABLE_STATS "Include statistics collections in backend" ON)
 set(TRITON_COMMON_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/common repo")
 set(TRITON_CORE_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/core repo")
 set(TRITON_BACKEND_REPO_TAG "main" CACHE STRING "Tag for triton-inference-server/backend repo")
-# 需根据实际路径填写
-set(ONNXRUNTIME_ROOT ${ONNXRUNTIME_ROOT})
+set(ONNXRUNTIME_ROOT "/opt/onnxruntime" CACHE PATH "Path to onnxruntime installation")
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)

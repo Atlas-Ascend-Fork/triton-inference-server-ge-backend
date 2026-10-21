@@ -23,7 +23,8 @@ std::string ModelInstanceState::GetEnvVar(const std::string &name)
     return (value != nullptr) ? std::string(value) : "";
 }
 
-void ModelInstanceState::LoadGeConfig(std::string &env_value, std::map<ge::AscendString, ge::AscendString> &configMap)
+void ModelInstanceState::LoadGeConfig(const std::string &env_value,
+                                      std::map<ge::AscendString, ge::AscendString> &configMap)
 {
     try {
         // Parse JSON
@@ -483,7 +484,11 @@ int ModelInstanceState::InitializeGlobalResources()
         LOG_MESSAGE(TRITONSERVER_LOG_VERBOSE, (std::string("ModelName: ") + model_state_->GetModelName() +
                                                std::string(" start init env , lock_id : ") + std::to_string(lock))
                                                   .c_str());
+        // 新一轮初始化开始，先清除上一轮的失败标记，避免一次失败后永远无法重新初始化
+        ge_init_failed_.store(false);
         if (InitGEEnvironment() != RET_OK) {
+            // 置位失败标记，让所有等待中的实例退出，避免 notify_id 永不推进
+            ge_init_failed_.store(true);
             return RET_ERR;
         }
     } else {
@@ -491,6 +496,10 @@ int ModelInstanceState::InitializeGlobalResources()
             // 按照取号顺序等待
             if (notify_id.load() == lock) {
                 break;
+            }
+            // lock==0 的实例初始化失败，直接退出，避免死循环
+            if (ge_init_failed_.load()) {
+                return RET_ERR;
             }
             LOG_MESSAGE(TRITONSERVER_LOG_VERBOSE, (std::string("ModelName: ") + model_state_->GetModelName() +
                                                    std::string(" wait , lock_id : ") + std::to_string(lock))
@@ -501,10 +510,16 @@ int ModelInstanceState::InitializeGlobalResources()
 
     std::vector<int> dev_ids_ = model_state_->GetDeviceIds();
     if (InitDevices(dev_ids_) != RET_OK) {
+        // 同上：让等待中的实例退出，而不是一直等一个不会到来的 notify
+        ge_init_failed_.store(true);
         return RET_ERR;
     }
 
-    return InitializeDeviceThreads(dev_ids_, lock);
+    if (InitializeDeviceThreads(dev_ids_, lock) != RET_OK) {
+        ge_init_failed_.store(true);
+        return RET_ERR;
+    }
+    return RET_OK;
 }
 
 int ModelInstanceState::InitializeDeviceThreads(const std::vector<int> &dev_ids_, int lock)

@@ -6,6 +6,7 @@ TRITON_VERSION="r24.02"
 INCREMENTAL_COMPILATION="OFF"
 COMPUTER_ARCH=$(uname -m)
 ONNXRUNTIME_ROOT="/opt/onnxruntime"
+CXX11_ABI_OVERRIDE=""
 echo "COMPUTER_ARCH: ${COMPUTER_ARCH}"
 
 usage() {
@@ -20,6 +21,8 @@ Options:
   --tritonserver-home-path <path>  Triton install path, the directory where tritonserver
                                    resides (default: /opt/tritonserver, can also be set via
                                    the TRITON_HOME_PATH environment variable)
+  --onnxruntime-path <path>        onnxruntime install path (default: /opt/onnxruntime)
+  --cxx11-abi <mode>               PyTorch C++ ABI: on|off|auto (default: auto, probe torch)
   --help                           Show this help message
 EOF
 }
@@ -44,6 +47,16 @@ while [[ $# -gt 0 ]]; do
       ;;
     --tritonserver-home-path)
       export TRITON_HOME_PATH="$2"
+      shift 2
+      ;;
+    --onnxruntime-path)
+      ONNXRUNTIME_ROOT="$2"
+      shift 2
+      ;;
+    --cxx11-abi)
+      if [ "$2" != "auto" ]; then
+        CXX11_ABI_OVERRIDE="$2"
+      fi
       shift 2
       ;;
     --help)
@@ -92,7 +105,7 @@ if [ ! -d "$TRITON_HOME_PATH" ]; then
   exit 1
 fi
 
-COMPILE_OPTIONS=""
+COMPILE_OPTIONS=()
 
 if tmp_path=$(which python3 2>/dev/null); then
   PYTHON_PATH="$tmp_path"
@@ -104,22 +117,56 @@ else
 fi
 echo "Python: ${PYTHON_PATH}"
 
-if [ $(${PYTHON_PATH} -c 'import torch; print(torch.compiled_with_cxx11_abi())') == "True" ]; then
-  USE_CXX11_ABI=ON
+# PyTorch C++ ABI detection: explicit override > probing torch.
+# A failed or ambiguous probe must not be silent (issue #65), but it must not
+# break builds that do not need torch either: warn loudly, fall back to the
+# documented default, and let the caller pin the value with --cxx11-abi.
+DEFAULT_CXX11_ABI="${DEFAULT_CXX11_ABI:-OFF}"
+if [ -n "${CXX11_ABI_OVERRIDE:-}" ]; then
+  case "$CXX11_ABI_OVERRIDE" in
+    on|ON|On|true|TRUE|True|1)
+      USE_CXX11_ABI=ON
+      ;;
+    off|OFF|Off|false|FALSE|False|0)
+      USE_CXX11_ABI=OFF
+      ;;
+    *)
+      echo "Invalid --cxx11-abi value: ${CXX11_ABI_OVERRIDE} (expected on|off|auto)" >&2
+      exit 1
+      ;;
+  esac
+  echo "PyTorch C++ ABI: USE_CXX11_ABI=${USE_CXX11_ABI} (set by --cxx11-abi)"
+elif TORCH_CXX11_ABI=$("${PYTHON_PATH}" -c 'import torch; print(torch.compiled_with_cxx11_abi())' 2>/dev/null); then
+  case "$TORCH_CXX11_ABI" in
+    True)
+      USE_CXX11_ABI=ON
+      ;;
+    False)
+      USE_CXX11_ABI=OFF
+      ;;
+    *)
+      echo "WARNING: unexpected PyTorch C++ ABI query result '${TORCH_CXX11_ABI}'." >&2
+      echo "WARNING: falling back to USE_CXX11_ABI=${DEFAULT_CXX11_ABI}; pass --cxx11-abi on|off to override." >&2
+      USE_CXX11_ABI=$DEFAULT_CXX11_ABI
+      ;;
+  esac
 else
-  USE_CXX11_ABI=OFF
+  echo "WARNING: failed to query the PyTorch C++ ABI with ${PYTHON_PATH} (is torch installed in this interpreter?)." >&2
+  echo "WARNING: falling back to USE_CXX11_ABI=${DEFAULT_CXX11_ABI}; pass --cxx11-abi on|off to override." >&2
+  USE_CXX11_ABI=$DEFAULT_CXX11_ABI
 fi
 
-COMPILE_OPTIONS="${COMPILE_OPTIONS} -DUSE_CXX11_ABI=$USE_CXX11_ABI"
-COMPILE_OPTIONS="${COMPILE_OPTIONS} -DCMAKE_BUILD_TYPE=$BUILD_TYPE"
-COMPILE_OPTIONS="${COMPILE_OPTIONS} -DCMAKE_INSTALL_PREFIX:PATH=`pwd`/install"
-COMPILE_OPTIONS="${COMPILE_OPTIONS} -DTRITON_COMMON_REPO_TAG=$TRITON_VERSION"
-COMPILE_OPTIONS="${COMPILE_OPTIONS} -DTRITON_BACKEND_REPO_TAG=$TRITON_VERSION"
-COMPILE_OPTIONS="${COMPILE_OPTIONS} -DTRITON_CORE_REPO_TAG=$TRITON_VERSION"
-COMPILE_OPTIONS="${COMPILE_OPTIONS} -DTRITON_ENABLE_GPU=OFF"
-COMPILE_OPTIONS="${COMPILE_OPTIONS} -DPython_EXECUTABLE=$PYTHON_PATH"
-COMPILE_OPTIONS="${COMPILE_OPTIONS} -DARCH=${COMPUTER_ARCH}"
+COMPILE_OPTIONS+=("-DUSE_CXX11_ABI=$USE_CXX11_ABI")
+COMPILE_OPTIONS+=("-DCMAKE_BUILD_TYPE=$BUILD_TYPE")
+COMPILE_OPTIONS+=("-DCMAKE_INSTALL_PREFIX:PATH=`pwd`/install")
+COMPILE_OPTIONS+=("-DTRITON_COMMON_REPO_TAG=$TRITON_VERSION")
+COMPILE_OPTIONS+=("-DTRITON_BACKEND_REPO_TAG=$TRITON_VERSION")
+COMPILE_OPTIONS+=("-DTRITON_CORE_REPO_TAG=$TRITON_VERSION")
+COMPILE_OPTIONS+=("-DTRITON_ENABLE_GPU=OFF")
+COMPILE_OPTIONS+=("-DPython_EXECUTABLE=$PYTHON_PATH")
+COMPILE_OPTIONS+=("-DONNXRUNTIME_ROOT=$ONNXRUNTIME_ROOT")
+COMPILE_OPTIONS+=("-DARCH=${COMPUTER_ARCH}")
 
-echo $COMPILE_OPTIONS
-cmake $COMPILE_OPTIONS ..
+printf '%s\n' "${COMPILE_OPTIONS[@]}"
+cmake "${COMPILE_OPTIONS[@]}" ..
 make install

@@ -42,6 +42,9 @@ namespace triton::backend::npu_ge {
 static std::atomic<int> next_id{0};
 static std::atomic<int> lock_id{0};
 static std::atomic<int> notify_id{0};
+// GE 环境初始化失败标记：lock==0 的实例初始化失败时置位，让所有等待中的实例及时退出，
+// 避免 notify_id 永不推进导致 while(1) 永久自旋（issue #43）
+static std::atomic<bool> ge_init_failed_{false};
 
 class ModelInstanceState : public BackendModelInstance {
 public:
@@ -55,7 +58,7 @@ public:
 
     // 静态工具方法
     static std::string GetEnvVar(const std::string &name);
-    static void LoadGeConfig(std::string &env_value, std::map<ge::AscendString, ge::AscendString> &configMap);
+    static void LoadGeConfig(const std::string &env_value, std::map<ge::AscendString, ge::AscendString> &configMap);
 
     void ConfigureParserOptions(std::map<ge::AscendString, ge::AscendString> &parser_options);
     bool ParseGraph(std::map<ge::AscendString, ge::AscendString> &parser_options, ge::Graph &graph1, std::mutex &mu);

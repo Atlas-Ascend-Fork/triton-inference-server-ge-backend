@@ -293,7 +293,7 @@ private:
     std::string RemoveSpaces(const std::string &str);
     bool IsValidVariableStart(char c);
     bool IsValidVariableChar(char c);
-    TRITONSERVER_Error *FindOutputDim(std::unordered_set<std::string> &umap1, Express &ex);
+    TRITONSERVER_Error *FindOutputDim(const std::unordered_set<std::string> &umap1, Express &ex);
 
     size_t onnx_input_count_;
     size_t onnx_output_count_;
@@ -302,7 +302,7 @@ private:
     void LogInputDimMapOutputDim();
     int GetFirstDimNum();
     TRITONSERVER_Error *CompareInputOutput();
-    bool FindMapResult(std::string &name, std::tuple<size_t, size_t, std::string> &t1);
+    bool FindMapResult(const std::string &name, std::tuple<size_t, size_t, std::string> &t1);
     void GetnegativeOne(size_t index, std::vector<int64_t> &dims_);
     bool ContainNegativeOneFromTensor(size_t index = 1);
     TRITONSERVER_Error *CheckModelMode();
@@ -314,7 +314,7 @@ private:
     void CompareOnnxAndTxt();
     std::string PrintModelMode(ModelState::ModelMode mode);
     bool can_dynamic_batching = false;
-    TRITONSERVER_Error *ProcessFindOutputDim(std::unordered_set<std::string> &umap1, Express &ex);
+    TRITONSERVER_Error *ProcessFindOutputDim(const std::unordered_set<std::string> &umap1, Express &ex);
     TRITONSERVER_Error *FindAndSetDim(Express &ex, const std::string &findname);
     std::vector<std::string> ProcessSymbolicDimensions(const Ort::TypeInfo &type_info);
     void LogSymbolicDimensions(const std::vector<std::string> &result);
@@ -344,7 +344,7 @@ private:
 
     std::map<std::string, std::map<std::string, std::string>> geOption_;
 
-    void SetOptions(std::string key, std::string value);
+    void SetOptions(const std::string &key, const std::string &value);
     void PrintGeOptions();
 };
 

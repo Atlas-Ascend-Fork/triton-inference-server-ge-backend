@@ -137,7 +137,7 @@ void ModelState::ParseGeConfig(const std::string &json_str)
     }
 }
 
-void ModelState::SetOptions(std::string key, std::string value)
+void ModelState::SetOptions(const std::string &key, const std::string &value)
 {
     vector<string> options = {"global.", "session.", "graph."};
     for (auto &option : options) {
@@ -823,12 +823,12 @@ std::unordered_set<std::string> ModelState::ExtractVariables(const std::string &
 
 // 根据记录和pbtxt的获取值进行对比
 
-TRITONSERVER_Error *ModelState::FindOutputDim(std::unordered_set<std::string> &umap1, Express &ex)
+TRITONSERVER_Error *ModelState::FindOutputDim(const std::unordered_set<std::string> &umap1, Express &ex)
 {
     return ProcessFindOutputDim(umap1, ex);
 }
 
-TRITONSERVER_Error *ModelState::ProcessFindOutputDim(std::unordered_set<std::string> &umap1, Express &ex)
+TRITONSERVER_Error *ModelState::ProcessFindOutputDim(const std::unordered_set<std::string> &umap1, Express &ex)
 {
     // 处理每个查找名称
     for (auto it = umap1.begin(); it != umap1.end(); it++) {
@@ -1161,7 +1161,7 @@ void ModelState::LogSymbolicDimensions(const std::vector<std::string> &result)
         LOG_MESSAGE(TRITONSERVER_LOG_VERBOSE, (std::string("No symbolic dimension information")).c_str());
     }
 }
-bool ModelState::FindMapResult(std::string &name, std::tuple<size_t, size_t, std::string> &t1)
+bool ModelState::FindMapResult(const std::string &name, std::tuple<size_t, size_t, std::string> &t1)
 {
     size_t len = input_onnx_tensor_.size();
     if (name == "") {

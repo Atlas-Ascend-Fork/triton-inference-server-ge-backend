@@ -64,8 +64,10 @@ function DP_ASSERT_EQUAL() {
 gcc --version
 echo "Build ${REPOSITORY_NAME}."
 cd ${WORKSPACE}/ || exit
-pip3 install numpy -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
-pip3 install torch --extra-index-url https://download.pytorch.org/whl/cpu --default-timeout=300 --retries=5
+# Use the CPU wheel mirror and resume downloads with the build.sh interpreter.
+python3 -m pip install --upgrade "pip>=26.2" --index-url https://pypi.org/simple --default-timeout=30 --retries=3
+python3 -m pip install numpy -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
+python3 -m pip install torch --index-url https://mirror.sjtu.edu.cn/pytorch-wheels/cpu --default-timeout=30 --retries=3 --resume-retries=5
 export TRITON_HOME_PATH="/opt/tritonserver"
 git config --global url."https://gitcode.com/guoyiwei1111/triton-inference-server-common.git".insteadOf "https://github.com/triton-inference-server/common.git"
 git config --global url."https://gitcode.com/guoyiwei1111/triton-inference-server-core.git".insteadOf "https://github.com/triton-inference-server/core.git"
