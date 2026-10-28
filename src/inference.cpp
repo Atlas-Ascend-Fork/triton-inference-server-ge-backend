@@ -97,10 +97,11 @@ int Inference::GetTotalBatch(const std::vector<int> &batch_result)
     return batch_total;
 }
 
-Inference::Inference(ModelState *model_state)
+Inference::Inference(ModelState *model_state, TRITONBACKEND_ModelInstance *model_instance)
 {
     InitTypeMappings();
     model_state_ = model_state;
+    model_instance_ = model_instance;
     SetTensorInfo(model_state_);
 }
 
@@ -669,6 +670,8 @@ int Inference::ExecuteGraphAndSyncV2(Scheduler::Instance *instance, std::vector<
                     (std::string("aclrtSynchronizeStream is failed, ret code is ") + std::to_string(acl_ret)).c_str());
         return RET_ERR;
     }
+    // 记录本实例的“计算结束”时刻：此时 GE 执行已完成，输出回拷尚未开始
+    SET_TIMESTAMP(instance->compute_end_ns);
     return RET_OK;
 }
 
@@ -999,7 +1002,8 @@ int Inference::DispatchInference(const std::vector<Scheduler::Instance *> &insta
 int Inference::BuildCombineResponses(const std::vector<TRITONBACKEND_Request *> &batch_tasks,
                                      const std::vector<void *> &outhost_buffer_, const std::vector<int> &batch_result,
                                      const std::vector<int> &input_offset,
-                                     const std::vector<int64_t> &outhost_line_size_)
+                                     const std::vector<int64_t> &outhost_line_size_,
+                                     RequestTimestamps &timestamps)
 {
     for (size_t i = 0; i < batch_tasks.size(); i++) {
         std::vector<int64_t> single_outsize_;
@@ -1012,11 +1016,42 @@ int Inference::BuildCombineResponses(const std::vector<TRITONBACKEND_Request *> 
             single_outsize_.push_back(response_size);
         }
         if (BuildComblineResponse(batch_tasks[i], outhost_buffer_, single_outsize_, batch_result[i], input_offset[i],
-                                  outhost_line_size_) != RET_OK) {
+                                  outhost_line_size_, timestamps) != RET_OK) {
             return RET_ERR;
         }
     }
+
+    // 整批统计：便于 Triton 计算 batch 维度的吞吐指标
+    if (model_instance_ != nullptr) {
+        LOG_IF_ERROR(TRITONBACKEND_ModelInstanceReportBatchStatistics(
+            model_instance_, static_cast<size_t>(GetTotalBatch(batch_result)), timestamps.exec_start_ns,
+            timestamps.compute_start_ns, timestamps.compute_end_ns, timestamps.exec_end_ns),
+            "failed reporting batch statistics");
+    }
     return RET_OK;
+}
+
+// 清空各实例上一轮采集到的计算结束时刻，避免复用旧值
+void Inference::ResetInstanceComputeEnd(const std::vector<Scheduler::Instance *> &instances)
+{
+    for (auto *instance : instances) {
+        instance->compute_end_ns = 0;
+    }
+}
+
+// 取所有实例中最晚的 GE 执行结束时刻作为 compute_end（多实例/多 cycle 聚合）。
+// 与 onnxruntime 后端一致：compute_end 停在 GE 执行完成处，输出回拷计入 compute_output。
+void Inference::AggregateComputeEnd(const std::vector<Scheduler::Instance *> &instances, RequestTimestamps &timestamps)
+{
+    for (const auto *instance : instances) {
+        if (instance->compute_end_ns > timestamps.compute_end_ns) {
+            timestamps.compute_end_ns = instance->compute_end_ns;
+        }
+    }
+    if (timestamps.compute_end_ns == 0) {
+        // 兜底：没有采集到实例时间戳时退回当前时刻
+        SET_TIMESTAMP(timestamps.compute_end_ns);
+    }
 }
 
 int Inference::ProcessCombineRequestV2(const std::vector<TRITONBACKEND_Request *> &batch_tasks,
@@ -1036,6 +1071,9 @@ int Inference::ProcessCombineRequestV2(const std::vector<TRITONBACKEND_Request *
     std::vector<int64_t> outhost_line_size_;
     std::vector<int> input_offset;
     int batch_total = GetTotalBatch(batch_result);
+    // 统计时间点：本次 execute 的起点
+    RequestTimestamps timestamps;
+    SET_TIMESTAMP(timestamps.exec_start_ns);
     LOG_MESSAGE(TRITONSERVER_LOG_VERBOSE, (std::string("batch_total: ") + std::to_string(batch_total)).c_str());
 
     // 准备推理数据（输入提取、维度计算、输出缓冲区准备）
@@ -1054,17 +1092,22 @@ int Inference::ProcessCombineRequestV2(const std::vector<TRITONBACKEND_Request *
     CalculateBatchDistribution(batch_total, instance_count, instance_offset, instance_batch);
 
     // 执行推理
+    ResetInstanceComputeEnd(instances);
+    SET_TIMESTAMP(timestamps.compute_start_ns);
     int dispatch_result = DispatchInference(instances, indev_buffer_, indev_line_size_, outhost_buffer_,
                                            outhost_line_size_, instance_offset, instance_batch);
+    AggregateComputeEnd(instances, timestamps);
     FreeDevResources(indev_buffer_);
     if (dispatch_result != RET_OK) {
         FreeHostResourcesV2(outhost_buffer_);
         return RET_ERR;
     }
 
-    // 构建响应
+    // 构建响应；exec_end 在 BuildComblineResponse 里写完全部响应输出后再刷新，
+    // 这里先给一个兜底值，避免没有请求被处理时该字段为 0
+    SET_TIMESTAMP(timestamps.exec_end_ns);
     if (BuildCombineResponses(batch_tasks, outhost_buffer_, batch_result, input_offset,
-                             outhost_line_size_) != RET_OK) {
+                              outhost_line_size_, timestamps) != RET_OK) {
         FreeHostResourcesV2(outhost_buffer_);
         return RET_ERR;
     }
@@ -1076,7 +1119,8 @@ int Inference::ProcessCombineRequestV2(const std::vector<TRITONBACKEND_Request *
 // 构建响应
 int Inference::BuildComblineResponse(TRITONBACKEND_Request *request, const std::vector<void *> &outhost_buffer_,
                                      const std::vector<int64_t> &outsize, int batch_total, int input_offset,
-                                     const std::vector<int64_t> &outhost_line_size_)
+                                     const std::vector<int64_t> &outhost_line_size_,
+                                     RequestTimestamps &timestamps)
 
 {
     TRITONBACKEND_Response *response;
@@ -1090,12 +1134,22 @@ int Inference::BuildComblineResponse(TRITONBACKEND_Request *request, const std::
         }
     }
 
+    // 输出已写入 Triton 响应缓冲区，此时才算本次执行结束（与 onnxruntime 后端一致）
+    SET_TIMESTAMP(timestamps.exec_end_ns);
+
     TRITONSERVER_Error *error = TRITONBACKEND_ResponseSend(response, TRITONSERVER_RESPONSE_COMPLETE_FINAL, nullptr);
     if (error != nullptr) {
         TRITONBACKEND_ResponseDelete(response);
         TRITONSERVER_ErrorDelete(error);
         LOG_MESSAGE(TRITONSERVER_LOG_VERBOSE, (std::string("TRITONBACKEND_ResponseSend failed, ")).c_str());
         return RET_ERR;
+    }
+    // 响应发送成功后、释放请求之前上报本请求的耗时统计
+    if (model_instance_ != nullptr) {
+        LOG_IF_ERROR(TRITONBACKEND_ModelInstanceReportStatistics(
+            model_instance_, request, true, timestamps.exec_start_ns, timestamps.compute_start_ns,
+            timestamps.compute_end_ns, timestamps.exec_end_ns),
+            "failed reporting request statistics");
     }
     LOG_IF_ERROR(TRITONBACKEND_RequestRelease(request, TRITONSERVER_REQUEST_RELEASE_ALL), "failed releasing request");
 

@@ -581,7 +581,7 @@ ModelInstanceState::ModelInstanceState(ModelState *model_state, TRITONBACKEND_Mo
     : BackendModelInstance(model_state, triton_model_instance),
       model_state_(model_state)
 {
-    inference_ = new Inference(model_state);
+    inference_ = new Inference(model_state, TritonModelInstance());
 }
 
 ModelInstanceState::~ModelInstanceState()

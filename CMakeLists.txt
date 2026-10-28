@@ -112,6 +112,11 @@ PRIVATE
 
 target_compile_features(triton-npu-ge-backend PRIVATE cxx_std_11)
 
+# 让 backend_common.h 的 SET_TIMESTAMP 真正取时间，否则统计时间戳恒为 0
+if(${TRITON_ENABLE_STATS})
+  target_compile_definitions(triton-npu-ge-backend PRIVATE TRITON_ENABLE_STATS)
+endif()
+
 target_link_directories(triton-npu-ge-backend PRIVATE
     ${ASCEND_PATH}/compiler/lib64/stub
     ${ASCEND_PATH}/${ARCH}-linux/devlib/linux/${ARCH}

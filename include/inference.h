@@ -28,9 +28,17 @@
 
 namespace triton::backend::npu_ge {
 
+// 一次推理执行的四个统计时间点（与 TRITONBACKEND_ModelInstanceReportStatistics 对齐）
+struct RequestTimestamps {
+    uint64_t exec_start_ns = 0;
+    uint64_t compute_start_ns = 0;
+    uint64_t compute_end_ns = 0;
+    uint64_t exec_end_ns = 0;
+};
+
 class Inference {
 public:
-    Inference(ModelState *model_state);
+    Inference(ModelState *model_state, TRITONBACKEND_ModelInstance *model_instance);
 
     // 线程控制
     std::atomic<Scheduler::Status> status_{Scheduler::Status::IDLE};
@@ -57,7 +65,7 @@ public:
     void CalculateCombineBatchDistribution(std::vector<int> &input_offset, const std::vector<int> &batch_combine);
     int BuildComblineResponse(TRITONBACKEND_Request *request, const std::vector<void *> &outhost_buffer_,
                               const std::vector<int64_t> &outsize, int batch_total, int input_offset,
-                              const std::vector<int64_t> &outhost_line_size_);
+                              const std::vector<int64_t> &outhost_line_size_, RequestTimestamps &timestamps);
     int GetTotalBatch(const std::vector<int> &batch_result);
 
     int BuildSingleCombineOutput(TRITONBACKEND_Response *response, size_t output_index, void *outhost_buffer,
@@ -177,11 +185,18 @@ public:
                           const std::vector<int> &instance_batch);
     int BuildCombineResponses(const std::vector<TRITONBACKEND_Request *> &batch_tasks,
                               const std::vector<void *> &outhost_buffer_, const std::vector<int> &batch_result,
-                              const std::vector<int> &input_offset, const std::vector<int64_t> &outhost_line_size_);
+                              const std::vector<int> &input_offset, const std::vector<int64_t> &outhost_line_size_,
+                              RequestTimestamps &timestamps);
+
+    // 每请求耗时统计的辅助方法
+    void ResetInstanceComputeEnd(const std::vector<Scheduler::Instance *> &instances);
+    void AggregateComputeEnd(const std::vector<Scheduler::Instance *> &instances, RequestTimestamps &timestamps);
 
 private:
     std::map<size_t, size_t> size_by_type_;
     std::map<size_t, ge::DataType> ge_data_trans_;
+    // 用于向 Triton 上报每个请求的耗时统计，随 ModelInstanceState 构造传入
+    TRITONBACKEND_ModelInstance *model_instance_ = nullptr;
 };
 }
 

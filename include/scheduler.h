@@ -39,6 +39,8 @@ public:
         int group_id;
         Status status;
         int task_count;  // 历史执行任务数量
+        // 本实例最近一次 GE 执行结束（stream 同步完成）的时间戳，供统计上报使用
+        uint64_t compute_end_ns = 0;
 
         Instance(int idx, aclrtContext ctx, aclrtStream stre, ge::Session *sess, int gid)
             : index(idx),
